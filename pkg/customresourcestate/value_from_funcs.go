@@ -16,7 +16,9 @@ limitations under the License.
 
 package customresourcestate
 
-import "fmt"
+import (
+	"fmt"
+)
 
 var valueFromFuncs = map[string]func(interface{}) (interface{}, error){
 	"count": vfCount,
@@ -31,9 +33,11 @@ func vfCount(i interface{}) (interface{}, error) {
 		return float64(len(val)), nil
 	case map[string]interface{}:
 		return float64(len(val)), nil
+	case nil:
+		return nil, nil
 	}
 
-	return float64(0), fmt.Errorf("cannot count non-collection type")
+	return nil, fmt.Errorf("cannot count non-collection type")
 }
 
 func vfSum(i interface{}) (interface{}, error) {
@@ -51,8 +55,10 @@ func vfSum(i interface{}) (interface{}, error) {
 				sum += num
 			}
 		}
+	case nil:
+		return nil, nil
 	default:
-		return float64(0), fmt.Errorf("cannot sum non-collection type")
+		return nil, fmt.Errorf("cannot sum non-collection type")
 	}
 	return sum, nil
 }
@@ -76,6 +82,10 @@ func vfMin(i interface{}) (interface{}, error) {
 				}
 			}
 		}
+	case nil:
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("cannot find min of non-collection type")
 	}
 	if min == nil {
 		return nil, nil
@@ -102,6 +112,10 @@ func vfMax(i interface{}) (interface{}, error) {
 				}
 			}
 		}
+	case nil:
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("cannot find max of non-collection type")
 	}
 	if max == nil {
 		return nil, nil

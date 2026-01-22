@@ -502,33 +502,60 @@ func gkv(group, version, kind string) GroupVersionKind {
 }
 
 func Test_valuePath_Get(t *testing.T) {
+	tests := []struct {
+		name    string
+		obj     interface{}
+		path    []string
+		want    interface{}
+		wantErr string
+	}{
+		// Basic access
+		{name: "obj", obj: cr, path: []string{"spec", "replicas"}, want: float64(1)},
+		{name: "string", obj: cr, path: []string{"metadata", "labels", "foo"}, want: "bar"},
+		{name: "empty path returns root", obj: cr, path: []string{}, want: cr},
+		// Array access
+		{name: "array filter", obj: cr, path: []string{"status", "condition_values", "[name=b]", "value"}, want: float64(66)},
+		{name: "array index", obj: cr, path: []string{"spec", "order", "0", "value"}, want: true},
+		{name: "negative array index", obj: cr, path: []string{"spec", "order", "-1", "id"}, want: float64(3)},
+		{name: "out of bounds returns nil", obj: cr, path: []string{"spec", "order", "10"}, want: nil},
+		// Filter matching
+		{name: "match number", obj: cr, path: []string{"spec", "order", "[id=3]", "value"}, want: false},
+		{name: "match bool", obj: cr, path: []string{"spec", "order", "[value=false]", "id"}, want: float64(3)},
+		{name: "filter no match returns nil", obj: cr, path: []string{"status", "conditions", "[type=NonExistent]"}, want: nil},
+		// Key=value on object (not array filter)
+		{name: "key=value match on object", obj: cr, path: []string{"metadata", "annotations", "bar=baz"}, want: "baz"},
+		{name: "key=value non-match returns nil", obj: cr, path: []string{"metadata", "annotations", "bar=other"}, want: nil},
+		// Non-existent paths
+		{name: "non-existent path returns nil", obj: cr, path: []string{"spec", "nonexistent"}, want: nil},
+		// Non-collection types - accessing child of scalar returns nil
+		{name: "access child of string returns nil", obj: cr, path: []string{"metadata", "name", "child"}, want: nil},
+		{name: "access child of number returns nil", obj: cr, path: []string{"spec", "replicas", "child"}, want: nil},
+		{name: "access child of bool returns nil", obj: cr, path: []string{"spec", "order", "0", "value", "child"}, want: nil},
+		{name: "array index on string returns nil", obj: cr, path: []string{"metadata", "name", "0"}, want: nil},
+		{name: "array filter on map returns nil", obj: cr, path: []string{"status", "active", "[type=a]"}, want: nil},
+		// Nil object input
+		{name: "nil object returns nil", obj: nil, path: []string{"spec", "replicas"}, want: nil},
 
-	type testCase struct {
-		name string
-		p    []string
-		want interface{}
+		// Built-in function integration (functions tested exhaustively in value_from_funcs_test.go)
+		{name: "function in path", obj: cr, path: []string{"spec", "order", "count()"}, want: float64(2)},
+		{name: "function error propagates", obj: cr, path: []string{"spec", "replicas", "count()"}, wantErr: "cannot count non-collection type"},
 	}
-	tt := func(name string, want interface{}, path ...string) testCase {
-		return testCase{
-			name: name,
-			p:    path,
-			want: want,
-		}
-	}
-	tests := []testCase{
-		tt("obj", float64(1), "spec", "replicas"),
-		tt("array", float64(66), "status", "condition_values", "[name=b]", "value"),
-		tt("array index", true, "spec", "order", "0", "value"),
-		tt("string", "bar", "metadata", "labels", "foo"),
-		tt("match number", false, "spec", "order", "[id=3]", "value"),
-		tt("match bool", float64(3), "spec", "order", "[value=false]", "id"),
-	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			p := mustCompilePath(t, tt.p...)
-			v, err := p.Get(cr)
-			assert.NoError(t, err)
-			assert.Equal(t, tt.want, v)
+			p, err := compileValueFrom(tt.path)
+			if err != nil {
+				t.Fatalf("failed to compile path: %v", err)
+			}
+
+			v, err := p.Get(tt.obj)
+			if tt.wantErr != "" {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, tt.want, v)
+			}
 		})
 	}
 }
@@ -555,4 +582,119 @@ func mustCompilePath(t *testing.T, path ...string) valuePath {
 		t.Fatalf("path %v: %v", path, err)
 	}
 	return out
+}
+
+func Test_compilePath(t *testing.T) {
+	tests := []struct {
+		name    string
+		path    []string
+		wantErr string
+	}{
+		// Valid syntax
+		{name: "empty path", path: []string{}},
+		{name: "nested path", path: []string{"spec", "nested", "deep", "value"}},
+		{name: "positive array index", path: []string{"spec", "items", "0"}},
+		{name: "negative array index", path: []string{"spec", "items", "-1"}},
+		{name: "bracket filter", path: []string{"status", "conditions", "[type=Ready]"}},
+		{name: "object key=value match", path: []string{"metadata", "labels", "app=myapp"}},
+		{name: "filter value with equals sign", path: []string{"spec", "items", "[name=a=b]"}},
+		// Invalid syntax
+		{name: "invalid bracket filter", path: []string{"spec", "items", "[invalid]"}, wantErr: "invalid list lookup"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := compilePath(tt.path)
+			if tt.wantErr != "" {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+			} else {
+				assert.NoError(t, err)
+				assert.Len(t, got, len(tt.path))
+			}
+		})
+	}
+}
+
+func Test_valuePath_String(t *testing.T) {
+	tests := []struct {
+		path []string
+		want string
+	}{
+		{path: []string{}, want: "[]"},
+		{path: []string{"spec", "replicas"}, want: "[spec,replicas]"},
+	}
+
+	for _, tt := range tests {
+		p, _ := compilePath(tt.path)
+		assert.Equal(t, tt.want, p.String())
+	}
+}
+
+func Test_compileValueFrom(t *testing.T) {
+	tests := []struct {
+		name    string
+		path    []string
+		wantErr string
+	}{
+		{name: "valid function compiles", path: []string{"spec", "items", "count()"}},
+		{name: "regular path without function", path: []string{"spec", "replicas"}},
+		{name: "unknown function errors", path: []string{"unknown()"}, wantErr: "unknown valueFrom function"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := compileValueFrom(tt.path)
+			if tt.wantErr != "" {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+			} else {
+				assert.NoError(t, err)
+				assert.NotNil(t, got)
+			}
+		})
+	}
+}
+
+func Test_toFloat64(t *testing.T) {
+	tests := []struct {
+		name      string
+		value     interface{}
+		nilIsZero bool
+		want      float64
+		wantErr   string
+	}{
+		// Boolean values
+		{name: "bool true", value: true, want: 1},
+		{name: "bool false", value: false, want: 0},
+		// Boolean strings
+		{name: "string true", value: "true", want: 1},
+		{name: "string TRUE (case insensitive)", value: "TRUE", want: 1},
+		{name: "string yes", value: "yes", want: 1},
+		{name: "string false", value: "false", want: 0},
+		{name: "string no", value: "no", want: 0},
+		{name: "string unknown", value: "unknown", want: 0},
+		// Nil handling
+		{name: "nil with nilIsZero=true returns 0", value: nil, nilIsZero: true, want: 0},
+		{name: "nil with nilIsZero=false returns error", value: nil, nilIsZero: false, want: 0, wantErr: "expected number but found nil"},
+		// Error cases
+		{name: "struct type", value: struct{ Name string }{Name: "test"}, wantErr: "expected number"},
+		{name: "slice type", value: []int{1, 2, 3}, wantErr: "expected number"},
+		{name: "map type", value: map[string]int{"a": 1}, wantErr: "expected number"},
+		{name: "invalid string", value: "not-a-number", wantErr: "invalid syntax"},
+		{name: "empty string", value: "", wantErr: "invalid syntax"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := toFloat64(tt.value, tt.nilIsZero)
+			if tt.wantErr != "" {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+			} else {
+				assert.NoError(t, err)
+			}
+			assert.Equal(t, tt.want, got)
+		})
+	}
 }
