@@ -526,7 +526,9 @@ func Test_valuePath_Get(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			p := mustCompilePath(t, tt.p...)
-			assert.Equal(t, tt.want, p.Get(cr))
+			v, err := p.Get(cr)
+			assert.NoError(t, err)
+			assert.Equal(t, tt.want, v)
 		})
 	}
 }

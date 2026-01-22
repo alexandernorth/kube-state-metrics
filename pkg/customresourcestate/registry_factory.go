@@ -164,13 +164,13 @@ func newCompiledMetric(m Metric) (compiledMetric, error) {
 		if err != nil {
 			return nil, fmt.Errorf("each.gauge: %w", err)
 		}
-		valueFromPath, err := compilePath(m.Gauge.ValueFrom)
+		valueFromCompiled, err := compileValueFrom(m.Gauge.ValueFrom)
 		if err != nil {
 			return nil, fmt.Errorf("each.gauge.valueFrom: %w", err)
 		}
 		return &compiledGauge{
 			compiledCommon: *cc,
-			ValueFrom:      valueFromPath,
+			ValueFrom:      valueFromCompiled,
 			NilIsZero:      m.Gauge.NilIsZero,
 			labelFromKey:   m.Gauge.LabelFromKey,
 		}, nil
@@ -196,7 +196,7 @@ func newCompiledMetric(m Metric) (compiledMetric, error) {
 		if err != nil {
 			return nil, fmt.Errorf("each.stateSet: %w", err)
 		}
-		valueFromPath, err := compilePath(m.StateSet.ValueFrom)
+		valueFromCompiled, err := compileValueFrom(m.StateSet.ValueFrom)
 		if err != nil {
 			return nil, fmt.Errorf("each.stateSet.valueFrom: %w", err)
 		}
@@ -204,7 +204,7 @@ func newCompiledMetric(m Metric) (compiledMetric, error) {
 			compiledCommon: *cc,
 			List:           m.StateSet.List,
 			LabelName:      m.StateSet.LabelName,
-			ValueFrom:      valueFromPath,
+			ValueFrom:      valueFromCompiled,
 		}, nil
 	default:
 		return nil, fmt.Errorf("unknown metric type %s", m.Type)
@@ -400,7 +400,10 @@ func (c *compiledStateSet) Values(v interface{}) (result []eachValue, errs []err
 }
 
 func (c *compiledStateSet) values(v interface{}) (result []eachValue, errs []error) {
-	comparable := c.ValueFrom.Get(v)
+	comparable, err := c.ValueFrom.Get(v)
+	if err != nil {
+		return nil, []error{fmt.Errorf("%s: error occurred when getting value from path: %w", c.path, err)}
+	}
 	value, ok := comparable.(string)
 	if !ok {
 		return []eachValue{}, []error{fmt.Errorf("%s: expected value for path to be string, got %T", c.path, comparable)}
@@ -446,7 +449,10 @@ func less(a, b map[string]string) bool {
 
 func (c compiledGauge) value(it interface{}) (*eachValue, error) {
 	labels := make(map[string]string)
-	got := c.ValueFrom.Get(it)
+	got, err := c.ValueFrom.Get(it)
+	if err != nil {
+		return nil, fmt.Errorf("%s: error occurred when getting value from path: %w", c.path, err)
+	}
 	// If `valueFrom` was not resolved, respect `NilIsZero` and return.
 	if got == nil {
 		if c.NilIsZero {
@@ -526,7 +532,10 @@ func addPathLabels(obj interface{}, labels map[string]valuePath, result map[stri
 	}
 	sort.Strings(stars)
 	for _, star := range stars {
-		m := labels[star].Get(obj)
+		m, err := labels[star].Get(obj)
+		if err != nil {
+			continue
+		}
 		if kv, ok := m.(map[string]interface{}); ok {
 			for k, v := range kv {
 				if strings.HasSuffix(star, "*") {
@@ -540,7 +549,10 @@ func addPathLabels(obj interface{}, labels map[string]valuePath, result map[stri
 		if strings.HasPrefix(k, "*") || strings.HasSuffix(k, "*") {
 			continue
 		}
-		value := v.Get(obj)
+		value, err := v.Get(obj)
+		if err != nil {
+			continue
+		}
 		// skip label if value is nil
 		if value == nil {
 			continue
@@ -550,20 +562,25 @@ func addPathLabels(obj interface{}, labels map[string]valuePath, result map[stri
 }
 
 type pathOp struct {
-	op   func(interface{}) interface{}
+	op   func(interface{}) (interface{}, error)
 	part string
 }
 
 type valuePath []pathOp
 
-func (p valuePath) Get(obj interface{}) interface{} {
+func (p valuePath) Get(obj interface{}) (interface{}, error) {
+	var result interface{} = obj
+	var err error
 	for _, op := range p {
-		if obj == nil {
-			return nil
+		if result == nil {
+			return nil, nil
 		}
-		obj = op.op(obj)
+		result, err = op.op(result)
+		if err != nil {
+			return nil, err
+		}
 	}
-	return obj
+	return result, nil
 }
 
 func (p valuePath) String() string {
@@ -577,6 +594,30 @@ func (p valuePath) String() string {
 	}
 	b.WriteRune(']')
 	return b.String()
+}
+
+func compileValueFrom(path []string) (out valuePath, err error) {
+	for i := range path {
+		part := path[i]
+		if idx := strings.Index(part, "()"); idx != -1 {
+			funcName := part[:idx]
+			if fn, ok := valueFromFuncs[funcName]; ok {
+				out = append(out, pathOp{
+					part: part,
+					op:   fn,
+				})
+				continue
+			}
+			return nil, fmt.Errorf("unknown valueFrom function: '%s'", funcName)
+		} else {
+			compiled, err := compilePath([]string{part})
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, compiled...)
+		}
+	}
+	return out, nil
 }
 
 func compilePath(path []string) (out valuePath, _ error) {
@@ -593,7 +634,7 @@ func compilePath(path []string) (out valuePath, _ error) {
 			boolVal, notBool := strconv.ParseBool(val)
 			out = append(out, pathOp{
 				part: part,
-				op: func(m interface{}) interface{} {
+				op: func(m interface{}) (interface{}, error) {
 					if s, ok := m.([]interface{}); ok {
 						for _, v := range s {
 							if m, ok := v.(map[string]interface{}); ok {
@@ -603,31 +644,31 @@ func compilePath(path []string) (out valuePath, _ error) {
 								}
 
 								if candidate == val {
-									return m
+									return m, nil
 								}
 
 								if notNum == nil {
 									if i, err := toFloat64(candidate, false); err == nil && num == i {
-										return m
+										return m, nil
 									}
 								}
 
 								if notBool == nil {
 									if v, ok := candidate.(bool); ok && v == boolVal {
-										return m
+										return m, nil
 									}
 								}
 
 							}
 						}
 					}
-					return nil
+					return nil, nil
 				},
 			})
 		} else {
 			out = append(out, pathOp{
 				part: part,
-				op: func(m interface{}) interface{} {
+				op: func(m interface{}) (interface{}, error) {
 					if mp, ok := m.(map[string]interface{}); ok {
 						kv := strings.Split(part, "=")
 						if len(kv) == 2 /* k=v */ {
@@ -635,29 +676,29 @@ func compilePath(path []string) (out valuePath, _ error) {
 							val := kv[1]
 							if v, ok := mp[key]; ok {
 								if v == val {
-									return v
+									return v, nil
 								}
 							}
 						}
-						return mp[part]
+						return mp[part], nil
 					} else if s, ok := m.([]interface{}); ok {
 						i, err := strconv.Atoi(part)
 						if err != nil {
 							// This means we are here: [ <string>, <int>, ... ] (eg., [ "foo", "0", ... ], i.e., <path>.foo[0]...
 							//                           ^
 							// Skip over.
-							return nil
+							return nil, nil
 						}
 						if i < 0 {
 							// negative index
 							i += len(s)
 						}
 						if i < 0 || i >= len(s) {
-							return fmt.Errorf("list index out of range: %s", part)
+							return nil, fmt.Errorf("list index out of range: %s", part)
 						}
-						return s[i]
+						return s[i], nil
 					}
-					return nil
+					return nil, nil
 				},
 			})
 		}
@@ -700,7 +741,10 @@ func generate(u *unstructured.Unstructured, f compiledFamily, errLog klog.Verbos
 }
 
 func scrapeValuesFor(e compiledEach, obj map[string]interface{}) ([]eachValue, []error) {
-	v := e.Path().Get(obj)
+	v, err := e.Path().Get(obj)
+	if err != nil {
+		return nil, []error{fmt.Errorf("%s: error occurred when getting value from path: %w", e.Path().String(), err)}
+	}
 	result, errs := e.Values(v)
 
 	// return results in a consistent order (simplifies testing)
