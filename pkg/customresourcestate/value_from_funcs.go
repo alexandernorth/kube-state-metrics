@@ -60,25 +60,26 @@ func vfSum(i interface{}) (interface{}, error) {
 	default:
 		return nil, fmt.Errorf("cannot sum non-collection type")
 	}
+
 	return sum, nil
 }
 
 func vfMin(i interface{}) (interface{}, error) {
-	var min *float64
+	var minVal *float64
 	switch val := i.(type) {
 	case []interface{}:
 		for _, item := range val {
 			if num, err := toFloat64(item, false); err == nil {
-				if min == nil || num < *min {
-					min = &num
+				if minVal == nil || num < *minVal {
+					minVal = &num
 				}
 			}
 		}
 	case map[string]interface{}:
 		for _, item := range val {
 			if num, err := toFloat64(item, false); err == nil {
-				if min == nil || num < *min {
-					min = &num
+				if minVal == nil || num < *minVal {
+					minVal = &num
 				}
 			}
 		}
@@ -87,28 +88,30 @@ func vfMin(i interface{}) (interface{}, error) {
 	default:
 		return nil, fmt.Errorf("cannot find min of non-collection type")
 	}
-	if min == nil {
+
+	if minVal == nil {
 		return nil, nil
 	}
-	return *min, nil
+
+	return *minVal, nil
 }
 
 func vfMax(i interface{}) (interface{}, error) {
-	var max *float64
+	var maxVal *float64
 	switch val := i.(type) {
 	case []interface{}:
 		for _, item := range val {
 			if num, err := toFloat64(item, false); err == nil {
-				if max == nil || num > *max {
-					max = &num
+				if maxVal == nil || num > *maxVal {
+					maxVal = &num
 				}
 			}
 		}
 	case map[string]interface{}:
 		for _, item := range val {
 			if num, err := toFloat64(item, false); err == nil {
-				if max == nil || num > *max {
-					max = &num
+				if maxVal == nil || num > *maxVal {
+					maxVal = &num
 				}
 			}
 		}
@@ -117,8 +120,10 @@ func vfMax(i interface{}) (interface{}, error) {
 	default:
 		return nil, fmt.Errorf("cannot find max of non-collection type")
 	}
-	if max == nil {
+
+	if maxVal == nil {
 		return nil, nil
 	}
-	return *max, nil
+
+	return *maxVal, nil
 }

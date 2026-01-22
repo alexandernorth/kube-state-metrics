@@ -569,7 +569,7 @@ type pathOp struct {
 type valuePath []pathOp
 
 func (p valuePath) Get(obj interface{}) (interface{}, error) {
-	var result interface{} = obj
+	result := obj
 	var err error
 	for _, op := range p {
 		if result == nil {
@@ -601,14 +601,14 @@ func compileValueFrom(path []string) (out valuePath, err error) {
 		part := path[i]
 		if idx := strings.Index(part, "()"); idx != -1 {
 			funcName := part[:idx]
-			if fn, ok := valueFromFuncs[funcName]; ok {
-				out = append(out, pathOp{
-					part: part,
-					op:   fn,
-				})
-				continue
+			fn, ok := valueFromFuncs[funcName]
+			if !ok {
+				return nil, fmt.Errorf("unknown valueFrom function: '%s'", funcName)
 			}
-			return nil, fmt.Errorf("unknown valueFrom function: '%s'", funcName)
+			out = append(out, pathOp{
+				part: part,
+				op:   fn,
+			})
 		} else {
 			compiled, err := compilePath([]string{part})
 			if err != nil {
