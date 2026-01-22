@@ -694,7 +694,10 @@ func compilePath(path []string) (out valuePath, _ error) {
 							i += len(s)
 						}
 						if i < 0 || i >= len(s) {
-							return nil, fmt.Errorf("list index out of range: %s", part)
+							// other 'failed' lookups do not fail - we probably should not either
+							// return nil, fmt.Errorf("list index out of range: %s", part)
+							return nil, nil
+
 						}
 						return s[i], nil
 					}
