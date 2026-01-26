@@ -20,14 +20,89 @@ import (
 	"fmt"
 )
 
-var valueFromFuncs = map[string]func(interface{}) (interface{}, error){
-	"count": vfCount,
-	"sum":   vfSum,
-	"min":   vfMin,
-	"max":   vfMax,
+// FuncType indicates how a function processes values.
+type FuncType int
+
+const (
+	// FuncIterative means the function is applied to each value individually.
+	// Results in N metrics for N input values.
+	FuncIterative FuncType = iota
+	// FuncAggregate means the function receives all values and returns a single result.
+	// Results in 1 metric regardless of input count.
+	FuncAggregate
+)
+
+// ValueFunc is a function that computes or transforms a value.
+// It receives the input value and optional string arguments.
+type ValueFunc func(value interface{}, args []string) (interface{}, error)
+
+// ValueFuncDef defines a value function with its type metadata.
+type ValueFuncDef struct {
+	Func ValueFunc
+	Type FuncType
 }
 
-func vfCount(i interface{}) (interface{}, error) {
+// valueFuncs maps function names to their definitions.
+var valueFuncs = map[string]ValueFuncDef{
+	// Iterative functions - applied to each value, returns N metrics
+	"filter":   {Func: vfFilter, Type: FuncIterative},
+	"multiply": {Func: vfMultiply, Type: FuncIterative},
+	"add":      {Func: vfAdd, Type: FuncIterative},
+	// Aggregate functions - receives all values, returns 1 metric
+	"count":  {Func: vfCount, Type: FuncAggregate},
+	"sum":    {Func: vfSum, Type: FuncAggregate},
+	"min":    {Func: vfMin, Type: FuncAggregate},
+	"max":    {Func: vfMax, Type: FuncAggregate},
+	"scalar": {Func: vfScalar, Type: FuncAggregate},
+}
+
+// vfFilter passes the value through unchanged (identity function).
+func vfFilter(i interface{}, _ []string) (interface{}, error) {
+	return i, nil
+}
+
+// vfMultiply multiplies the value by args[0].
+func vfMultiply(i interface{}, args []string) (interface{}, error) {
+	if len(args) == 0 {
+		return nil, fmt.Errorf("multiply function requires a multiplier argument")
+	}
+	multiplier, err := toFloat64(args[0], false)
+	if err != nil {
+		return nil, fmt.Errorf("invalid multiplier: %w", err)
+	}
+	val, err := toFloat64(i, false)
+	if err != nil {
+		return nil, err
+	}
+	return val * multiplier, nil
+}
+
+// vfAdd adds args[0] to the value.
+func vfAdd(i interface{}, args []string) (interface{}, error) {
+	if len(args) == 0 {
+		return nil, fmt.Errorf("add function requires an addend argument")
+	}
+	addend, err := toFloat64(args[0], false)
+	if err != nil {
+		return nil, fmt.Errorf("invalid addend: %w", err)
+	}
+	val, err := toFloat64(i, false)
+	if err != nil {
+		return nil, err
+	}
+	return val + addend, nil
+}
+
+// vfScalar returns a static value specified in args[0], ignoring the input.
+// Usage: func: {name: scalar, args: ["42"]}
+func vfScalar(_ interface{}, args []string) (interface{}, error) {
+	if len(args) == 0 {
+		return nil, fmt.Errorf("scalar function requires at least one argument")
+	}
+	return toFloat64(args[0], false)
+}
+
+func vfCount(i interface{}, _ []string) (interface{}, error) {
 	switch val := i.(type) {
 	case []interface{}:
 		return float64(len(val)), nil
@@ -40,7 +115,7 @@ func vfCount(i interface{}) (interface{}, error) {
 	return nil, fmt.Errorf("cannot count non-collection type")
 }
 
-func vfSum(i interface{}) (interface{}, error) {
+func vfSum(i interface{}, _ []string) (interface{}, error) {
 	sum := float64(0)
 	switch val := i.(type) {
 	case []interface{}:
@@ -64,7 +139,7 @@ func vfSum(i interface{}) (interface{}, error) {
 	return sum, nil
 }
 
-func vfMin(i interface{}) (interface{}, error) {
+func vfMin(i interface{}, _ []string) (interface{}, error) {
 	var minVal *float64
 	switch val := i.(type) {
 	case []interface{}:
@@ -96,7 +171,7 @@ func vfMin(i interface{}) (interface{}, error) {
 	return *minVal, nil
 }
 
-func vfMax(i interface{}) (interface{}, error) {
+func vfMax(i interface{}, _ []string) (interface{}, error) {
 	var maxVal *float64
 	switch val := i.(type) {
 	case []interface{}:

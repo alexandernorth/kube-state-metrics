@@ -16,6 +16,65 @@ limitations under the License.
 
 package customresourcestate
 
+import (
+	"encoding/json"
+	"fmt"
+)
+
+// ValueFromSpec specifies how to extract a metric value from a resource.
+// It supports three modes:
+// - MapPath only: extract given path's value from each item (N metrics)
+// - Func only: apply function to entire path result (1 metric)
+// - MapPath + Func: extract from each item, then apply function (1 metric, map-reduce)
+type ValueFromSpec struct {
+	// MapPath is the path to extract values from each item in a collection.
+	// This is equivalent to the legacy []string behavior.
+	MapPath []string `yaml:"mapPath,omitempty" json:"mapPath,omitempty"`
+	// Func specifies a function to apply to the extracted values.
+	Func *FuncSpec `yaml:"func,omitempty" json:"func,omitempty"`
+}
+
+// FuncSpec specifies a function and its arguments.
+type FuncSpec struct {
+	// Name is the name of the function (e.g., "count", "sum", "scalar", "filter", etc).
+	Name string `yaml:"name" json:"name"`
+	// Args are optional string arguments to pass to the function.
+	Args []string `yaml:"args,omitempty" json:"args,omitempty"`
+}
+
+// unmarshalValueFromSpec handles decoding ValueFromSpec from either []string or struct.
+func unmarshalValueFromSpec(decode func(interface{}) error, v *ValueFromSpec) error {
+	// Try legacy []string format
+	var legacy []string
+	if err := decode(&legacy); err == nil {
+		*v = ValueFromSpec{
+			MapPath: legacy,
+			// No Func means iteration mode (legacy behavior)
+		}
+		return nil
+	}
+	// Try struct format
+	var vfs ValueFromSpec
+	if err := decode(&vfs); err != nil {
+		return fmt.Errorf("valueFrom must be either a string array or a ValueFromSpec object: %w", err)
+	}
+	*v = vfs
+	return nil
+}
+
+// UnmarshalYAML supports both the legacy []string format and the struct format.
+func (v *ValueFromSpec) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	return unmarshalValueFromSpec(unmarshal, v)
+}
+
+// UnmarshalJSON supports both the legacy []string format and the struct format.
+func (v *ValueFromSpec) UnmarshalJSON(data []byte) error {
+	return unmarshalValueFromSpec(
+		func(i interface{}) error { return json.Unmarshal(data, i) },
+		v,
+	)
+}
+
 // MetricMeta are variables which may used for any metric type.
 type MetricMeta struct {
 	// LabelsFromPath adds additional labels where the value of the label is taken from a field under Path.
@@ -31,8 +90,9 @@ type MetricGauge struct {
 	LabelFromKey string `yaml:"labelFromKey" json:"labelFromKey"`
 	MetricMeta   `yaml:",inline" json:",inline"`
 
-	// ValueFrom is the path to a numeric field under Path that will be the metric value.
-	ValueFrom []string `yaml:"valueFrom" json:"valueFrom"`
+	// ValueFrom specifies how to extract the metric value.
+	// Can be a simple path (legacy format: []string) or a ValueFromSpec for advanced features.
+	ValueFrom ValueFromSpec `yaml:"valueFrom" json:"valueFrom"`
 	// NilIsZero indicates that if a value is nil it will be treated as zero value.
 	NilIsZero bool `yaml:"nilIsZero" json:"nilIsZero"`
 }
@@ -54,6 +114,7 @@ type MetricStateSet struct {
 	List []string `yaml:"list" json:"list"`
 	// LabelName is the key of the label which is used for each entry in List to expose the value.
 	LabelName string `yaml:"labelName" json:"labelName"`
-	// ValueFrom is the subpath to compare the list to.
-	ValueFrom []string `yaml:"valueFrom" json:"valueFrom"`
+	// ValueFrom specifies the path to compare the list to.
+	// For StateSet, only MapPath is used (reduce functions are not applicable).
+	ValueFrom ValueFromSpec `yaml:"valueFrom" json:"valueFrom"`
 }

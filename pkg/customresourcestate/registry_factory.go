@@ -196,7 +196,8 @@ func newCompiledMetric(m Metric) (compiledMetric, error) {
 		if err != nil {
 			return nil, fmt.Errorf("each.stateSet: %w", err)
 		}
-		valueFromCompiled, err := compileValueFrom(m.StateSet.ValueFrom)
+		// StateSet only uses mapPath for string comparison, not reduce functions
+		valueFromCompiled, err := compilePath(m.StateSet.ValueFrom.MapPath)
 		if err != nil {
 			return nil, fmt.Errorf("each.stateSet.valueFrom: %w", err)
 		}
@@ -211,98 +212,154 @@ func newCompiledMetric(m Metric) (compiledMetric, error) {
 	}
 }
 
+// compiledValueFrom holds the compiled representation of a ValueFromSpec.
+type compiledValueFrom struct {
+	// mapPath is the compiled path for extracting values.
+	mapPath valuePath
+	// fn is the function to apply (nil means no transformation).
+	fn ValueFunc
+	// fnType indicates whether fn is aggregate or iterative.
+	fnType FuncType
+	// fnName is the name of the function (for error messages).
+	fnName string
+	// fnArgs are the arguments to pass to the function.
+	fnArgs []string
+}
+
 type compiledGauge struct {
 	compiledCommon
 	labelFromKey string
-	ValueFrom    valuePath
+	ValueFrom    *compiledValueFrom
 	NilIsZero    bool
 }
 
 func (c *compiledGauge) Values(v interface{}) (result []eachValue, errs []error) {
 	onError := func(err error) {
-		errs = append(errs, fmt.Errorf("%s: %v", c.Path(), err))
+		errs = append(errs, fmt.Errorf("%s: %w", c.Path(), err))
+	}
+
+	if v == nil {
+		onError(errors.New("got nil while resolving path"))
+		return nil, errs
+	}
+
+	// Step 1: Collect items with context (key, original item, extracted value)
+	type itemCtx struct {
+		key   string      // map key (for labelFromKey)
+		item  interface{} // original item (for addPathLabels)
+		value interface{} // extracted value via mapPath
+	}
+	var items []itemCtx
+
+	// Check if mapPath is a single-segment path (for special map key matching)
+	mapPathStr := c.ValueFrom.mapPath.String()
+	isSingleSegment := !strings.Contains(mapPathStr, ",") &&
+		len(mapPathStr) > 2 &&
+		mapPathStr[0] == '[' && mapPathStr[len(mapPathStr)-1] == ']'
+	var singleSegmentKey string
+	if isSingleSegment {
+		singleSegmentKey = mapPathStr[1 : len(mapPathStr)-1]
 	}
 
 	switch iter := v.(type) {
 	case map[string]interface{}:
-		for key, it := range iter {
-			// TODO: Handle multi-length valueFrom paths (https://github.com/kubernetes/kube-state-metrics/pull/1958#discussion_r1099243161).
-			// Try to deduce `valueFrom`'s value from the current element.
-			var ev *eachValue
-			var err error
-			var didResolveValueFrom bool
-			// `valueFrom` will ultimately be rendered into a string and sent to the fallback in place, which also expects a string.
-			// So we'll do the same and operate on the string representation of `valueFrom`'s value.
-			sValueFrom := c.ValueFrom.String()
-			// No comma means we're looking at a unit-length path (in an array).
-			if !strings.Contains(sValueFrom, ",") &&
-				sValueFrom[0] == '[' && sValueFrom[len(sValueFrom)-1] == ']' &&
-				// "[...]" and not "[]".
-				len(sValueFrom) > 2 {
-				extractedValueFrom := sValueFrom[1 : len(sValueFrom)-1]
-				if key == extractedValueFrom {
-					gotFloat, err := toFloat64(it, c.NilIsZero)
-					if err != nil {
-						onError(fmt.Errorf("[%s]: %w", key, err))
-						continue
-					}
-					labels := make(map[string]string)
-					ev = &eachValue{
-						Labels: labels,
-						Value:  gotFloat,
-					}
-					didResolveValueFrom = true
-				}
+		for key, item := range iter {
+			var gv interface{}
+			// Special case: if mapPath is a single segment and matches the key, use the value directly
+			if isSingleSegment && key == singleSegmentKey {
+				gv = item
+			} else {
+				gv = c.ValueFrom.mapPath.Get(item)
 			}
-			// Fallback to the regular path resolution, if we didn't manage to resolve `valueFrom`'s value.
-			if !didResolveValueFrom {
-				ev, err = c.value(it)
-				if ev == nil {
-					continue
-				}
+			if gv != nil {
+				items = append(items, itemCtx{key: key, item: item, value: gv})
 			}
-			if err != nil {
-				onError(fmt.Errorf("[%s]: %w", key, err))
-				continue
-			}
-			if _, ok := ev.Labels[c.labelFromKey]; ok {
-				onError(fmt.Errorf("labelFromKey (%s) generated labels conflict with labelsFromPath, consider renaming it", c.labelFromKey))
-				continue
-			}
-			if key != "" && c.labelFromKey != "" {
-				ev.Labels[c.labelFromKey] = key
-			}
-			addPathLabels(it, c.LabelFromPath(), ev.Labels)
-			// Evaluate path from parent's context as well (search w.r.t. the root element, not just specific fields).
-			addPathLabels(v, c.LabelFromPath(), ev.Labels)
-			result = append(result, *ev)
 		}
 	case []interface{}:
-		for i, it := range iter {
-			value, err := c.value(it)
-			if err != nil {
-				onError(fmt.Errorf("[%d]: %w", i, err))
-				continue
+		for _, item := range iter {
+			gv := c.ValueFrom.mapPath.Get(item)
+			if gv != nil {
+				items = append(items, itemCtx{item: item, value: gv})
 			}
-			if value == nil {
-				continue
-			}
-			addPathLabels(it, c.LabelFromPath(), value.Labels)
-			result = append(result, *value)
 		}
 	default:
-		value, err := c.value(v)
-		if err != nil {
-			onError(err)
-			break
+		gv := c.ValueFrom.mapPath.Get(v)
+		if gv != nil {
+			items = []itemCtx{{item: v, value: gv}}
 		}
-		if value == nil {
-			break
-		}
-		addPathLabels(v, c.LabelFromPath(), value.Labels)
-		result = append(result, *value)
 	}
-	return
+
+	// Handle case where no items were found
+	if len(items) == 0 {
+		if c.NilIsZero {
+			return []eachValue{{Labels: make(map[string]string), Value: 0}}, errs
+		}
+		return nil, errs
+	}
+
+	// Step 2: Apply function and build results
+	switch c.ValueFrom.fnType {
+	case FuncIterative:
+		for _, it := range items {
+			transformed, err := c.ValueFrom.fn(it.value, c.ValueFrom.fnArgs)
+			if err != nil {
+				onError(fmt.Errorf("[%s]: %s: %w", it.key, c.ValueFrom.fnName, err))
+				continue
+			}
+			value, err := toFloat64(transformed, c.NilIsZero)
+			if err != nil {
+				onError(fmt.Errorf("[%s]: %w", it.key, err))
+				continue
+			}
+
+			ev := eachValue{Value: value, Labels: make(map[string]string)}
+
+			// Add labelFromKey for map iterations
+			if it.key != "" && c.labelFromKey != "" {
+				if _, conflict := ev.Labels[c.labelFromKey]; conflict {
+					onError(fmt.Errorf("labelFromKey (%s) conflicts with labelsFromPath", c.labelFromKey))
+					continue
+				}
+				ev.Labels[c.labelFromKey] = it.key
+			}
+
+			// Add labels from the item and root
+			addPathLabels(it.item, c.LabelFromPath(), ev.Labels)
+			addPathLabels(v, c.LabelFromPath(), ev.Labels)
+			result = append(result, ev)
+		}
+
+	case FuncAggregate:
+		// Collect just the values for aggregation
+		var values []interface{}
+		for _, it := range items {
+			values = append(values, it.value)
+		}
+
+		if len(values) == 0 {
+			if c.NilIsZero {
+				return []eachValue{{Labels: make(map[string]string), Value: 0}}, errs
+			}
+			return nil, errs
+		}
+
+		transformed, err := c.ValueFrom.fn(values, c.ValueFrom.fnArgs)
+		if err != nil {
+			onError(fmt.Errorf("%s: %w", c.ValueFrom.fnName, err))
+			return nil, errs
+		}
+		value, err := toFloat64(transformed, c.NilIsZero)
+		if err != nil {
+			onError(fmt.Errorf("%s: %w", c.ValueFrom.fnName, err))
+			return nil, errs
+		}
+
+		ev := eachValue{Value: value, Labels: make(map[string]string)}
+		addPathLabels(v, c.LabelFromPath(), ev.Labels)
+		result = append(result, ev)
+	}
+
+	return result, errs
 }
 
 type compiledInfo struct {
@@ -400,10 +457,7 @@ func (c *compiledStateSet) Values(v interface{}) (result []eachValue, errs []err
 }
 
 func (c *compiledStateSet) values(v interface{}) (result []eachValue, errs []error) {
-	comparable, err := c.ValueFrom.Get(v)
-	if err != nil {
-		return nil, []error{fmt.Errorf("%s: error occurred when getting value from path: %w", c.path, err)}
-	}
+	comparable := c.ValueFrom.Get(v)
 	value, ok := comparable.(string)
 	if !ok {
 		return []eachValue{}, []error{fmt.Errorf("%s: expected value for path to be string, got %T", c.path, comparable)}
@@ -445,37 +499,6 @@ func less(a, b map[string]string) bool {
 		return va < vb
 	}
 	return len(aKeys) < len(bKeys)
-}
-
-func (c compiledGauge) value(it interface{}) (*eachValue, error) {
-	labels := make(map[string]string)
-	got, err := c.ValueFrom.Get(it)
-	if err != nil {
-		return nil, fmt.Errorf("%s: error occurred when getting value from path: %w", c.path, err)
-	}
-	// If `valueFrom` was not resolved, respect `NilIsZero` and return.
-	if got == nil {
-		if c.NilIsZero {
-			return &eachValue{
-				Labels: labels,
-				Value:  0,
-			}, nil
-		}
-		// no it means no iterables were passed down, meaning that the path resolution never happened
-		if it == nil {
-			return nil, fmt.Errorf("got nil while resolving path")
-		}
-		// Don't error if there was not a type-casting issue (`toFloat64`).
-		return nil, nil
-	}
-	value, err := toFloat64(got, c.NilIsZero)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", c.ValueFrom, err)
-	}
-	return &eachValue{
-		Labels: labels,
-		Value:  value,
-	}, nil
 }
 
 func (e eachValue) DefaultLabels(defaults map[string]string) {
@@ -532,10 +555,7 @@ func addPathLabels(obj interface{}, labels map[string]valuePath, result map[stri
 	}
 	sort.Strings(stars)
 	for _, star := range stars {
-		m, err := labels[star].Get(obj)
-		if err != nil {
-			continue
-		}
+		m := labels[star].Get(obj)
 		if kv, ok := m.(map[string]interface{}); ok {
 			for k, v := range kv {
 				if strings.HasSuffix(star, "*") {
@@ -549,10 +569,7 @@ func addPathLabels(obj interface{}, labels map[string]valuePath, result map[stri
 		if strings.HasPrefix(k, "*") || strings.HasSuffix(k, "*") {
 			continue
 		}
-		value, err := v.Get(obj)
-		if err != nil {
-			continue
-		}
+		value := v.Get(obj)
 		// skip label if value is nil
 		if value == nil {
 			continue
@@ -562,25 +579,24 @@ func addPathLabels(obj interface{}, labels map[string]valuePath, result map[stri
 }
 
 type pathOp struct {
-	op   func(interface{}) (interface{}, error)
+	op   func(interface{}) interface{}
 	part string
 }
 
 type valuePath []pathOp
 
-func (p valuePath) Get(obj interface{}) (interface{}, error) {
+func (p valuePath) Get(obj interface{}) interface{} {
+	if len(p) == 0 {
+		return obj
+	}
 	result := obj
-	var err error
 	for _, op := range p {
 		if result == nil {
-			return nil, nil
+			return nil
 		}
-		result, err = op.op(result)
-		if err != nil {
-			return nil, err
-		}
+		result = op.op(result)
 	}
-	return result, nil
+	return result
 }
 
 func (p valuePath) String() string {
@@ -596,28 +612,32 @@ func (p valuePath) String() string {
 	return b.String()
 }
 
-func compileValueFrom(path []string) (out valuePath, err error) {
-	for i := range path {
-		part := path[i]
-		if idx := strings.Index(part, "()"); idx != -1 {
-			funcName := part[:idx]
-			fn, ok := valueFromFuncs[funcName]
-			if !ok {
-				return nil, fmt.Errorf("unknown valueFrom function: '%s'", funcName)
-			}
-			out = append(out, pathOp{
-				part: part,
-				op:   fn,
-			})
-		} else {
-			compiled, err := compilePath([]string{part})
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, compiled...)
+// compileValueFrom compiles a ValueFromSpec into a compiledValueFrom.
+func compileValueFrom(spec ValueFromSpec) (*compiledValueFrom, error) {
+	result := &compiledValueFrom{}
+
+	// Compile mapPath if specified
+	if len(spec.MapPath) > 0 {
+		compiled, err := compilePath(spec.MapPath)
+		if err != nil {
+			return nil, fmt.Errorf("mapPath: %w", err)
 		}
+		result.mapPath = compiled
 	}
-	return out, nil
+
+	// Compile function if specified
+	if spec.Func != nil {
+		fnDef, ok := valueFuncs[spec.Func.Name]
+		if !ok {
+			return nil, fmt.Errorf("unknown function: '%s'", spec.Func.Name)
+		}
+		result.fn = fnDef.Func
+		result.fnType = fnDef.Type
+		result.fnName = spec.Func.Name
+		result.fnArgs = spec.Func.Args
+	}
+
+	return result, nil
 }
 
 func compilePath(path []string) (out valuePath, _ error) {
@@ -634,7 +654,7 @@ func compilePath(path []string) (out valuePath, _ error) {
 			boolVal, notBool := strconv.ParseBool(val)
 			out = append(out, pathOp{
 				part: part,
-				op: func(m interface{}) (interface{}, error) {
+				op: func(m interface{}) interface{} {
 					if s, ok := m.([]interface{}); ok {
 						for _, v := range s {
 							if m, ok := v.(map[string]interface{}); ok {
@@ -644,31 +664,31 @@ func compilePath(path []string) (out valuePath, _ error) {
 								}
 
 								if candidate == val {
-									return m, nil
+									return m
 								}
 
 								if notNum == nil {
 									if i, err := toFloat64(candidate, false); err == nil && num == i {
-										return m, nil
+										return m
 									}
 								}
 
 								if notBool == nil {
 									if v, ok := candidate.(bool); ok && v == boolVal {
-										return m, nil
+										return m
 									}
 								}
 
 							}
 						}
 					}
-					return nil, nil
+					return nil
 				},
 			})
 		} else {
 			out = append(out, pathOp{
 				part: part,
-				op: func(m interface{}) (interface{}, error) {
+				op: func(m interface{}) interface{} {
 					if mp, ok := m.(map[string]interface{}); ok {
 						kv := strings.Split(part, "=")
 						if len(kv) == 2 /* k=v */ {
@@ -676,18 +696,18 @@ func compilePath(path []string) (out valuePath, _ error) {
 							val := kv[1]
 							if v, ok := mp[key]; ok {
 								if v == val {
-									return v, nil
+									return v
 								}
 							}
 						}
-						return mp[part], nil
+						return mp[part]
 					} else if s, ok := m.([]interface{}); ok {
 						i, err := strconv.Atoi(part)
 						if err != nil {
 							// This means we are here: [ <string>, <int>, ... ] (eg., [ "foo", "0", ... ], i.e., <path>.foo[0]...
 							//                           ^
 							// Skip over.
-							return nil, nil
+							return nil
 						}
 						if i < 0 {
 							// negative index
@@ -695,13 +715,13 @@ func compilePath(path []string) (out valuePath, _ error) {
 						}
 						if i < 0 || i >= len(s) {
 							// other 'failed' lookups do not fail - we probably should not either
-							// return nil, fmt.Errorf("list index out of range: %s", part)
-							return nil, nil
+							// return fmt.Errorf("list index out of range: %s", part)
+							return nil
 
 						}
-						return s[i], nil
+						return s[i]
 					}
-					return nil, nil
+					return nil
 				},
 			})
 		}
@@ -744,10 +764,7 @@ func generate(u *unstructured.Unstructured, f compiledFamily, errLog klog.Verbos
 }
 
 func scrapeValuesFor(e compiledEach, obj map[string]interface{}) ([]eachValue, []error) {
-	v, err := e.Path().Get(obj)
-	if err != nil {
-		return nil, []error{fmt.Errorf("%s: error occurred when getting value from path: %w", e.Path().String(), err)}
-	}
+	v := e.Path().Get(obj)
 	result, errs := e.Values(v)
 
 	// return results in a consistent order (simplifies testing)

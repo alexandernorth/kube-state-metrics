@@ -168,12 +168,14 @@ func Test_values(t *testing.T) {
 			compiledCommon: compiledCommon{
 				path: mustCompilePath(t, "spec", "replicas"),
 			},
+			ValueFrom: mustCompileEmptyValueFrom(t),
 		}, wantResult: []eachValue{newEachValue(t, 1)}},
 		{name: "obj", each: &compiledGauge{
 			compiledCommon: compiledCommon{
 				path: mustCompilePath(t, "status", "active"),
 			},
 			labelFromKey: "type",
+			ValueFrom:    mustCompileEmptyValueFrom(t),
 		}, wantResult: []eachValue{
 			newEachValue(t, 1, "type", "type-a"),
 			newEachValue(t, 3, "type", "type-b"),
@@ -186,7 +188,7 @@ func Test_values(t *testing.T) {
 				},
 			},
 			labelFromKey: "type",
-			ValueFrom:    mustCompilePath(t, "ready"),
+			ValueFrom:    mustCompileValueFromPath(t, "ready"),
 		}, wantResult: []eachValue{
 			newEachValue(t, 2, "type", "type-a", "active", "1"),
 			newEachValue(t, 4, "type", "type-b", "active", "3"),
@@ -198,7 +200,7 @@ func Test_values(t *testing.T) {
 					"name": mustCompilePath(t, "name"),
 				},
 			},
-			ValueFrom: mustCompilePath(t, "creationTimestamp"),
+			ValueFrom: mustCompileValueFromPath(t, "creationTimestamp"),
 		}, wantResult: []eachValue{
 			newEachValue(t, 1.6563744e+09, "name", "foo"),
 		}},
@@ -209,7 +211,7 @@ func Test_values(t *testing.T) {
 					"name": mustCompilePath(t, "name"),
 				},
 			},
-			ValueFrom: mustCompilePath(t, "creationTimestamp"),
+			ValueFrom: mustCompileValueFromPath(t, "creationTimestamp"),
 		}, wantResult: nil, wantErrors: []error{
 			errors.New("[foo]: got nil while resolving path"),
 		}},
@@ -217,7 +219,7 @@ func Test_values(t *testing.T) {
 			compiledCommon: compiledCommon{
 				path: mustCompilePath(t, "spec", "replicas"),
 			},
-			ValueFrom: mustCompilePath(t, "non-existent"),
+			ValueFrom: mustCompileValueFromPath(t, "non-existent"),
 		}, wantResult: nil, wantErrors: nil,
 		},
 		{name: "exist path but valueFrom path non-existent array", each: &compiledGauge{
@@ -227,7 +229,7 @@ func Test_values(t *testing.T) {
 					"name": mustCompilePath(t, "name"),
 				},
 			},
-			ValueFrom: mustCompilePath(t, "non-existent"),
+			ValueFrom: mustCompileValueFromPath(t, "non-existent"),
 		}, wantResult: nil, wantErrors: nil,
 		},
 		{name: "array", each: &compiledGauge{
@@ -237,7 +239,7 @@ func Test_values(t *testing.T) {
 					"name": mustCompilePath(t, "name"),
 				},
 			},
-			ValueFrom: mustCompilePath(t, "value"),
+			ValueFrom: mustCompileValueFromPath(t, "value"),
 		}, wantResult: []eachValue{
 			newEachValue(t, 45, "name", "a"),
 			newEachValue(t, 66, "name", "b"),
@@ -246,6 +248,7 @@ func Test_values(t *testing.T) {
 			compiledCommon: compiledCommon{
 				path: mustCompilePath(t, "metadata", "creationTimestamp"),
 			},
+			ValueFrom: mustCompileEmptyValueFrom(t),
 		}, wantResult: []eachValue{
 			newEachValue(t, 1656374400),
 		}},
@@ -253,6 +256,7 @@ func Test_values(t *testing.T) {
 			compiledCommon: compiledCommon{
 				path: mustCompilePath(t, "status", "quantity_milli"),
 			},
+			ValueFrom: mustCompileEmptyValueFrom(t),
 		}, wantResult: []eachValue{
 			newEachValue(t, 0.25),
 		}},
@@ -260,6 +264,7 @@ func Test_values(t *testing.T) {
 			compiledCommon: compiledCommon{
 				path: mustCompilePath(t, "status", "quantity_binarySI"),
 			},
+			ValueFrom: mustCompileEmptyValueFrom(t),
 		}, wantResult: []eachValue{
 			newEachValue(t, 5.36870912e+09),
 		}},
@@ -267,6 +272,7 @@ func Test_values(t *testing.T) {
 			compiledCommon: compiledCommon{
 				path: mustCompilePath(t, "status", "percentage"),
 			},
+			ValueFrom: mustCompileEmptyValueFrom(t),
 		}, wantResult: []eachValue{
 			newEachValue(t, 0.28),
 		}},
@@ -277,7 +283,7 @@ func Test_values(t *testing.T) {
 					"name": mustCompilePath(t, "name"),
 				},
 			},
-			ValueFrom: mustCompilePath(t, "percentage"),
+			ValueFrom: mustCompileValueFromPath(t, "percentage"),
 		}, wantResult: []eachValue{
 			newEachValue(t, 0.39, "name", "foo"),
 		}},
@@ -285,6 +291,7 @@ func Test_values(t *testing.T) {
 			compiledCommon: compiledCommon{
 				path: mustCompilePath(t, "spec", "paused"),
 			},
+			ValueFrom: mustCompileEmptyValueFrom(t),
 			NilIsZero: true,
 		}, wantResult: []eachValue{
 			newEachValue(t, 0),
@@ -337,6 +344,7 @@ func Test_values(t *testing.T) {
 			compiledCommon: compiledCommon{
 				path: mustCompilePath(t, "status", "conditions", "[type=Ready]", "status"),
 			},
+			ValueFrom: mustCompileEmptyValueFrom(t),
 		}, wantResult: []eachValue{
 			newEachValue(t, 1),
 		}},
@@ -347,7 +355,7 @@ func Test_values(t *testing.T) {
 					"type": mustCompilePath(t, "type"),
 				},
 			},
-			ValueFrom: mustCompilePath(t, "status"),
+			ValueFrom: mustCompileValueFromPath(t, "status"),
 		}, wantResult: []eachValue{
 			newEachValue(t, 0, "type", "Provisioned"),
 			newEachValue(t, 1, "type", "Ready"),
@@ -503,11 +511,10 @@ func gkv(group, version, kind string) GroupVersionKind {
 
 func Test_valuePath_Get(t *testing.T) {
 	tests := []struct {
-		name    string
-		obj     interface{}
-		path    []string
-		want    interface{}
-		wantErr string
+		name string
+		obj  interface{}
+		path []string
+		want interface{}
 	}{
 		// Basic access
 		{name: "obj", obj: cr, path: []string{"spec", "replicas"}, want: float64(1)},
@@ -535,27 +542,17 @@ func Test_valuePath_Get(t *testing.T) {
 		{name: "array filter on map returns nil", obj: cr, path: []string{"status", "active", "[type=a]"}, want: nil},
 		// Nil object input
 		{name: "nil object returns nil", obj: nil, path: []string{"spec", "replicas"}, want: nil},
-
-		// Built-in function integration (functions tested exhaustively in value_from_funcs_test.go)
-		{name: "function in path", obj: cr, path: []string{"spec", "order", "count()"}, want: float64(2)},
-		{name: "function error propagates", obj: cr, path: []string{"spec", "replicas", "count()"}, wantErr: "cannot count non-collection type"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			p, err := compileValueFrom(tt.path)
+			p, err := compilePath(tt.path)
 			if err != nil {
 				t.Fatalf("failed to compile path: %v", err)
 			}
 
-			v, err := p.Get(tt.obj)
-			if tt.wantErr != "" {
-				assert.Error(t, err)
-				assert.Contains(t, err.Error(), tt.wantErr)
-			} else {
-				assert.NoError(t, err)
-				assert.Equal(t, tt.want, v)
-			}
+			v := p.Get(tt.obj)
+			assert.Equal(t, tt.want, v)
 		})
 	}
 }
@@ -582,6 +579,32 @@ func mustCompilePath(t *testing.T, path ...string) valuePath {
 		t.Fatalf("path %v: %v", path, err)
 	}
 	return out
+}
+
+// mustCompileValueFromPath creates a compiledValueFrom with just a mapPath (filter behavior).
+// This is used in tests where ValueFrom was previously a simple path.
+func mustCompileValueFromPath(t *testing.T, path ...string) *compiledValueFrom {
+	t.Helper()
+	compiled, err := compilePath(path)
+	if err != nil {
+		t.Fatalf("path %v: %v", path, err)
+	}
+	return &compiledValueFrom{
+		mapPath: compiled,
+		fn:      valueFuncs["filter"].Func,
+		fnType:  valueFuncs["filter"].Type,
+		fnName:  "filter",
+	}
+}
+
+// mustCompileEmptyValueFrom creates a compiledValueFrom with empty mapPath (returns value as-is).
+func mustCompileEmptyValueFrom(t *testing.T) *compiledValueFrom {
+	t.Helper()
+	return &compiledValueFrom{
+		fn:     valueFuncs["filter"].Func,
+		fnType: valueFuncs["filter"].Type,
+		fnName: "filter",
+	}
 }
 
 func Test_compilePath(t *testing.T) {
@@ -634,17 +657,18 @@ func Test_valuePath_String(t *testing.T) {
 func Test_compileValueFrom(t *testing.T) {
 	tests := []struct {
 		name    string
-		path    []string
+		spec    ValueFromSpec
 		wantErr string
 	}{
-		{name: "valid function compiles", path: []string{"spec", "items", "count()"}},
-		{name: "regular path without function", path: []string{"spec", "replicas"}},
-		{name: "unknown function errors", path: []string{"unknown()"}, wantErr: "unknown valueFrom function"},
+		{name: "path only", spec: ValueFromSpec{MapPath: []string{"spec", "replicas"}}},
+		{name: "path with filter function", spec: ValueFromSpec{MapPath: []string{"spec", "replicas"}, Func: &FuncSpec{Name: "filter"}}},
+		{name: "path with count function", spec: ValueFromSpec{MapPath: []string{"spec", "items"}, Func: &FuncSpec{Name: "count"}}},
+		{name: "unknown function errors", spec: ValueFromSpec{Func: &FuncSpec{Name: "unknown"}}, wantErr: "unknown function"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := compileValueFrom(tt.path)
+			got, err := compileValueFrom(tt.spec)
 			if tt.wantErr != "" {
 				assert.Error(t, err)
 				assert.Contains(t, err.Error(), tt.wantErr)

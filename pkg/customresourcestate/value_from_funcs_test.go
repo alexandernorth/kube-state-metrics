@@ -40,7 +40,7 @@ func Test_vfCount(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := vfCount(tt.input)
+			got, err := vfCount(tt.input, nil)
 			if tt.wantErr {
 				assert.Error(t, err)
 			} else {
@@ -69,7 +69,7 @@ func Test_vfSum(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := vfSum(tt.input)
+			got, err := vfSum(tt.input, nil)
 			if tt.wantErr {
 				assert.Error(t, err)
 			} else {
@@ -101,7 +101,7 @@ func Test_vfMin(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := vfMin(tt.input)
+			got, err := vfMin(tt.input, nil)
 			if tt.wantErr {
 				assert.Error(t, err)
 			} else {
@@ -133,7 +133,7 @@ func Test_vfMax(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := vfMax(tt.input)
+			got, err := vfMax(tt.input, nil)
 			if tt.wantErr {
 				assert.Error(t, err)
 			} else {
@@ -145,9 +145,9 @@ func Test_vfMax(t *testing.T) {
 }
 
 func Test_valueFromFuncsRegistry(t *testing.T) {
-	expected := []string{"count", "sum", "min", "max"}
-	assert.Len(t, valueFromFuncs, len(expected))
+	expected := []string{"filter", "count", "sum", "min", "max", "scalar"}
+	assert.Len(t, valueFuncs, len(expected))
 	for _, name := range expected {
-		assert.Contains(t, valueFromFuncs, name)
+		assert.Contains(t, valueFuncs, name)
 	}
 }
