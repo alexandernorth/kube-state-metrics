@@ -16,12 +16,51 @@ limitations under the License.
 
 package customresourcestate
 
+import (
+	"encoding/json"
+)
+
 // MetricMeta are variables which may used for any metric type.
 type MetricMeta struct {
 	// LabelsFromPath adds additional labels where the value of the label is taken from a field under Path.
 	LabelsFromPath map[string][]string `yaml:"labelsFromPath" json:"labelsFromPath"`
 	// Path is the path to to generate metric(s) for.
 	Path []string `yaml:"path" json:"path"`
+}
+
+// ValueFrom defines an optional function to derive a value from a path.
+type ValueFrom struct {
+	Func string   `yaml:"func" json:"func"`
+	Args []string `yaml:"args" json:"args"`
+}
+
+// unmarshallValueFrom unmarshalls ValueFrom either from a string slice or from a full struct.
+func (vf *ValueFrom) unmarshallValueFrom(unmarshal func(interface{}) error) error {
+	var stringSlice []string
+	if err := unmarshal(&stringSlice); err == nil {
+		vf.Func = "path"
+		vf.Args = stringSlice
+		return nil
+	}
+
+	var valueFromStruct ValueFrom
+	if err := unmarshal(&valueFromStruct); err != nil {
+		return err
+	}
+	*vf = valueFromStruct
+	return nil
+}
+
+// UnmarshalJSON unmarshalls ValueFrom either from a string slice or from a full struct.
+func (vf *ValueFrom) UnmarshalJSON(data []byte) error {
+	return vf.unmarshallValueFrom(func(v interface{}) error {
+		return json.Unmarshal(data, v)
+	})
+}
+
+// UnmarshalYAML unmarshalls ValueFrom either from a string slice or from a full struct.
+func (vf *ValueFrom) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	return vf.unmarshallValueFrom(unmarshal)
 }
 
 // MetricGauge targets a Path that may be a single value, array, or object. Arrays and objects will generate a metric per element.
@@ -31,8 +70,8 @@ type MetricGauge struct {
 	LabelFromKey string `yaml:"labelFromKey" json:"labelFromKey"`
 	MetricMeta   `yaml:",inline" json:",inline"`
 
-	// ValueFrom is the path to a numeric field under Path that will be the metric value.
-	ValueFrom []string `yaml:"valueFrom" json:"valueFrom"`
+	// ValueFrom is the subpath or function to derive the value from.
+	ValueFrom ValueFrom `yaml:"valueFrom" json:"valueFrom"`
 	// NilIsZero indicates that if a value is nil it will be treated as zero value.
 	NilIsZero bool `yaml:"nilIsZero" json:"nilIsZero"`
 }
@@ -55,5 +94,5 @@ type MetricStateSet struct {
 	// LabelName is the key of the label which is used for each entry in List to expose the value.
 	LabelName string `yaml:"labelName" json:"labelName"`
 	// ValueFrom is the subpath to compare the list to.
-	ValueFrom []string `yaml:"valueFrom" json:"valueFrom"`
+	ValueFrom ValueFrom `yaml:"valueFrom" json:"valueFrom"`
 }

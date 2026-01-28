@@ -186,7 +186,7 @@ func Test_values(t *testing.T) {
 				},
 			},
 			labelFromKey: "type",
-			ValueFrom:    mustCompilePath(t, "ready"),
+			ValueFrom:    mustCompileValueFunc(t, "path", "ready"),
 		}, wantResult: []eachValue{
 			newEachValue(t, 2, "type", "type-a", "active", "1"),
 			newEachValue(t, 4, "type", "type-b", "active", "3"),
@@ -198,7 +198,7 @@ func Test_values(t *testing.T) {
 					"name": mustCompilePath(t, "name"),
 				},
 			},
-			ValueFrom: mustCompilePath(t, "creationTimestamp"),
+			ValueFrom: mustCompileValueFunc(t, "path", "creationTimestamp"),
 		}, wantResult: []eachValue{
 			newEachValue(t, 1.6563744e+09, "name", "foo"),
 		}},
@@ -209,7 +209,7 @@ func Test_values(t *testing.T) {
 					"name": mustCompilePath(t, "name"),
 				},
 			},
-			ValueFrom: mustCompilePath(t, "creationTimestamp"),
+			ValueFrom: mustCompileValueFunc(t, "path", "creationTimestamp"),
 		}, wantResult: nil, wantErrors: []error{
 			errors.New("[foo]: got nil while resolving path"),
 		}},
@@ -217,7 +217,7 @@ func Test_values(t *testing.T) {
 			compiledCommon: compiledCommon{
 				path: mustCompilePath(t, "spec", "replicas"),
 			},
-			ValueFrom: mustCompilePath(t, "non-existent"),
+			ValueFrom: mustCompileValueFunc(t, "path", "non-existent"),
 		}, wantResult: nil, wantErrors: nil,
 		},
 		{name: "exist path but valueFrom path non-existent array", each: &compiledGauge{
@@ -227,7 +227,7 @@ func Test_values(t *testing.T) {
 					"name": mustCompilePath(t, "name"),
 				},
 			},
-			ValueFrom: mustCompilePath(t, "non-existent"),
+			ValueFrom: mustCompileValueFunc(t, "path", "non-existent"),
 		}, wantResult: nil, wantErrors: nil,
 		},
 		{name: "array", each: &compiledGauge{
@@ -237,7 +237,7 @@ func Test_values(t *testing.T) {
 					"name": mustCompilePath(t, "name"),
 				},
 			},
-			ValueFrom: mustCompilePath(t, "value"),
+			ValueFrom: mustCompileValueFunc(t, "path", "value"),
 		}, wantResult: []eachValue{
 			newEachValue(t, 45, "name", "a"),
 			newEachValue(t, 66, "name", "b"),
@@ -277,7 +277,7 @@ func Test_values(t *testing.T) {
 					"name": mustCompilePath(t, "name"),
 				},
 			},
-			ValueFrom: mustCompilePath(t, "percentage"),
+			ValueFrom: mustCompileValueFunc(t, "path", "percentage"),
 		}, wantResult: []eachValue{
 			newEachValue(t, 0.39, "name", "foo"),
 		}},
@@ -347,7 +347,7 @@ func Test_values(t *testing.T) {
 					"type": mustCompilePath(t, "type"),
 				},
 			},
-			ValueFrom: mustCompilePath(t, "status"),
+			ValueFrom: mustCompileValueFunc(t, "path", "status"),
 		}, wantResult: []eachValue{
 			newEachValue(t, 0, "type", "Provisioned"),
 			newEachValue(t, 1, "type", "Ready"),
@@ -551,6 +551,15 @@ func mustCompilePath(t *testing.T, path ...string) valuePath {
 	out, err := compilePath(path)
 	if err != nil {
 		t.Fatalf("path %v: %v", path, err)
+	}
+	return out
+}
+
+func mustCompileValueFunc(t *testing.T, funcName string, args ...string) valueFunc {
+	t.Helper()
+	out, err := compileValueFunc(ValueFrom{Func: funcName, Args: args})
+	if err != nil {
+		t.Fatalf("function %s, args: %v: %v", funcName, args, err)
 	}
 	return out
 }

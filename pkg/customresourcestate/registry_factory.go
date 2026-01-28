@@ -164,13 +164,13 @@ func newCompiledMetric(m Metric) (compiledMetric, error) {
 		if err != nil {
 			return nil, fmt.Errorf("each.gauge: %w", err)
 		}
-		valueFromPath, err := compilePath(m.Gauge.ValueFrom)
+		valueFrom, err := compileValueFunc(m.Gauge.ValueFrom)
 		if err != nil {
 			return nil, fmt.Errorf("each.gauge.valueFrom: %w", err)
 		}
 		return &compiledGauge{
 			compiledCommon: *cc,
-			ValueFrom:      valueFromPath,
+			ValueFrom:      valueFrom,
 			NilIsZero:      m.Gauge.NilIsZero,
 			labelFromKey:   m.Gauge.LabelFromKey,
 		}, nil
@@ -196,7 +196,8 @@ func newCompiledMetric(m Metric) (compiledMetric, error) {
 		if err != nil {
 			return nil, fmt.Errorf("each.stateSet: %w", err)
 		}
-		valueFromPath, err := compilePath(m.StateSet.ValueFrom)
+		// TODO: migrate to new valuePath structure
+		valueFromPath, err := compilePath(m.StateSet.ValueFrom.Args)
 		if err != nil {
 			return nil, fmt.Errorf("each.stateSet.valueFrom: %w", err)
 		}
@@ -214,71 +215,31 @@ func newCompiledMetric(m Metric) (compiledMetric, error) {
 type compiledGauge struct {
 	compiledCommon
 	labelFromKey string
-	ValueFrom    valuePath
+	ValueFrom    valueFunc
 	NilIsZero    bool
 }
 
-func (c *compiledGauge) Values(v interface{}) (result []eachValue, errs []error) {
+func (c *compiledGauge) valuesAggregate(v interface{}) ([]eachValue, error) {
+	res := c.ValueFrom.Get(v)
+	value, err := c.value(res)
+	if err != nil {
+		return nil, err
+	}
+	if value == nil {
+		return nil, nil
+	}
+	addPathLabels(v, c.LabelFromPath(), value.Labels)
+	return []eachValue{*value}, nil
+}
+
+func (c *compiledGauge) valuesIterative(v interface{}) (result []eachValue, errs []error) {
 	onError := func(err error) {
 		errs = append(errs, fmt.Errorf("%s: %v", c.Path(), err))
 	}
 
-	switch iter := v.(type) {
-	case map[string]interface{}:
-		for key, it := range iter {
-			// TODO: Handle multi-length valueFrom paths (https://github.com/kubernetes/kube-state-metrics/pull/1958#discussion_r1099243161).
-			// Try to deduce `valueFrom`'s value from the current element.
-			var ev *eachValue
-			var err error
-			var didResolveValueFrom bool
-			// `valueFrom` will ultimately be rendered into a string and sent to the fallback in place, which also expects a string.
-			// So we'll do the same and operate on the string representation of `valueFrom`'s value.
-			sValueFrom := c.ValueFrom.String()
-			// No comma means we're looking at a unit-length path (in an array).
-			if !strings.Contains(sValueFrom, ",") &&
-				sValueFrom[0] == '[' && sValueFrom[len(sValueFrom)-1] == ']' &&
-				// "[...]" and not "[]".
-				len(sValueFrom) > 2 {
-				extractedValueFrom := sValueFrom[1 : len(sValueFrom)-1]
-				if key == extractedValueFrom {
-					gotFloat, err := toFloat64(it, c.NilIsZero)
-					if err != nil {
-						onError(fmt.Errorf("[%s]: %w", key, err))
-						continue
-					}
-					labels := make(map[string]string)
-					ev = &eachValue{
-						Labels: labels,
-						Value:  gotFloat,
-					}
-					didResolveValueFrom = true
-				}
-			}
-			// Fallback to the regular path resolution, if we didn't manage to resolve `valueFrom`'s value.
-			if !didResolveValueFrom {
-				ev, err = c.value(it)
-				if ev == nil {
-					continue
-				}
-			}
-			if err != nil {
-				onError(fmt.Errorf("[%s]: %w", key, err))
-				continue
-			}
-			if _, ok := ev.Labels[c.labelFromKey]; ok {
-				onError(fmt.Errorf("labelFromKey (%s) generated labels conflict with labelsFromPath, consider renaming it", c.labelFromKey))
-				continue
-			}
-			if key != "" && c.labelFromKey != "" {
-				ev.Labels[c.labelFromKey] = key
-			}
-			addPathLabels(it, c.LabelFromPath(), ev.Labels)
-			// Evaluate path from parent's context as well (search w.r.t. the root element, not just specific fields).
-			addPathLabels(v, c.LabelFromPath(), ev.Labels)
-			result = append(result, *ev)
-		}
+	switch vv := v.(type) {
 	case []interface{}:
-		for i, it := range iter {
+		for i, it := range vv {
 			value, err := c.value(it)
 			if err != nil {
 				onError(fmt.Errorf("[%d]: %w", i, err))
@@ -290,19 +251,146 @@ func (c *compiledGauge) Values(v interface{}) (result []eachValue, errs []error)
 			addPathLabels(it, c.LabelFromPath(), value.Labels)
 			result = append(result, *value)
 		}
+	case map[string]interface{}:
+		for key, it := range vv {
+			value, err := c.value(it)
+			if err != nil {
+				onError(fmt.Errorf("[%s]: %w", key, err))
+				continue
+			}
+			if value == nil {
+				continue
+			}
+			if _, ok := value.Labels[c.labelFromKey]; ok {
+				onError(fmt.Errorf("labelFromKey (%s) generated labels conflict with labelsFromPath, consider renaming it", c.labelFromKey))
+				continue
+			}
+			if key != "" && c.labelFromKey != "" {
+				value.Labels[c.labelFromKey] = key
+			}
+			addPathLabels(it, c.LabelFromPath(), value.Labels)
+			// Evaluate path from parent's context as well (search w.r.t. the root element, not just specific fields).
+			addPathLabels(v, c.LabelFromPath(), value.Labels)
+			result = append(result, *value)
+		}
 	default:
-		value, err := c.value(v)
+		value, err := c.value(vv)
 		if err != nil {
 			onError(err)
-			break
+			return
 		}
 		if value == nil {
-			break
+			return
 		}
 		addPathLabels(v, c.LabelFromPath(), value.Labels)
 		result = append(result, *value)
 	}
-	return
+
+	return result, errs
+}
+
+func (c *compiledGauge) Values(v interface{}) (result []eachValue, errs []error) {
+
+	switch c.ValueFrom.IsAggregate {
+	case true:
+		values, err := c.valuesAggregate(v)
+		if err != nil {
+			errs = append(errs, err)
+			return
+		}
+		result = append(result, values...)
+	case false:
+		values, err := c.valuesIterative(v)
+		if len(err) > 0 {
+			errs = append(errs, err...)
+			return
+		}
+		result = append(result, values...)
+	}
+	return result, nil
+
+	/*
+		switch iter := v.(type) {
+		case map[string]interface{}:
+			for key, it := range iter {
+				// TODO: Handle multi-length valueFrom paths (https://github.com/kubernetes/kube-state-metrics/pull/1958#discussion_r1099243161).
+				// Try to deduce `valueFrom`'s value from the current element.
+				var ev *eachValue
+				var err error
+				var didResolveValueFrom bool
+				// `valueFrom` will ultimately be rendered into a string and sent to the fallback in place, which also expects a string.
+				// So we'll do the same and operate on the string representation of `valueFrom`'s value.
+				sValueFrom := c.ValueFrom.String()
+				// No comma means we're looking at a unit-length path (in an array).
+				if !strings.Contains(sValueFrom, ",") &&
+					sValueFrom[0] == '[' && sValueFrom[len(sValueFrom)-1] == ']' &&
+					// "[...]" and not "[]".
+					len(sValueFrom) > 2 {
+					extractedValueFrom := sValueFrom[1 : len(sValueFrom)-1]
+					if key == extractedValueFrom {
+						gotFloat, err := toFloat64(it, c.NilIsZero)
+						if err != nil {
+							onError(fmt.Errorf("[%s]: %w", key, err))
+							continue
+						}
+						labels := make(map[string]string)
+						ev = &eachValue{
+							Labels: labels,
+							Value:  gotFloat,
+						}
+						didResolveValueFrom = true
+					}
+				}
+				// Fallback to the regular path resolution, if we didn't manage to resolve `valueFrom`'s value.
+				if !didResolveValueFrom {
+					ev, err = c.value(it)
+					if ev == nil {
+						continue
+					}
+				}
+				if err != nil {
+					onError(fmt.Errorf("[%s]: %w", key, err))
+					continue
+				}
+				if _, ok := ev.Labels[c.labelFromKey]; ok {
+					onError(fmt.Errorf("labelFromKey (%s) generated labels conflict with labelsFromPath, consider renaming it", c.labelFromKey))
+					continue
+				}
+				if key != "" && c.labelFromKey != "" {
+					ev.Labels[c.labelFromKey] = key
+				}
+				addPathLabels(it, c.LabelFromPath(), ev.Labels)
+				// Evaluate path from parent's context as well (search w.r.t. the root element, not just specific fields).
+				addPathLabels(v, c.LabelFromPath(), ev.Labels)
+				result = append(result, *ev)
+			}
+		case []interface{}:
+			for i, it := range iter {
+				value, err := c.value(it)
+				if err != nil {
+					onError(fmt.Errorf("[%d]: %w", i, err))
+					continue
+				}
+				if value == nil {
+					continue
+				}
+				addPathLabels(it, c.LabelFromPath(), value.Labels)
+				result = append(result, *value)
+			}
+		default:
+			value, err := c.value(v)
+			if err != nil {
+				onError(err)
+				break
+			}
+			if value == nil {
+				break
+			}
+			addPathLabels(v, c.LabelFromPath(), value.Labels)
+			result = append(result, *value)
+		}
+		return
+	*/
 }
 
 type compiledInfo struct {
@@ -549,6 +637,11 @@ func addPathLabels(obj interface{}, labels map[string]valuePath, result map[stri
 	}
 }
 
+type valuer interface {
+	Get(obj interface{}) interface{}
+	String() string
+}
+
 type pathOp struct {
 	op   func(interface{}) interface{}
 	part string
@@ -576,6 +669,37 @@ func (p valuePath) String() string {
 		b.WriteString(op.part)
 	}
 	b.WriteRune(']')
+	return b.String()
+}
+
+type valueFunc struct {
+	ValueFromFunc
+	Args []string
+}
+
+func (vf valueFunc) Get(obj interface{}) interface{} {
+	// No-op if no function is defined
+	if vf.Func == nil {
+		return obj
+	}
+	value, err := vf.Func(obj, vf.Args...)
+	if err != nil {
+		return nil
+	}
+	return value
+}
+
+func (vf valueFunc) String() string {
+	var b strings.Builder
+	b.WriteString(vf.FuncName)
+	b.WriteRune('(')
+	for i, arg := range vf.Args {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(arg)
+	}
+	b.WriteRune(')')
 	return b.String()
 }
 
@@ -663,6 +787,21 @@ func compilePath(path []string) (out valuePath, _ error) {
 		}
 	}
 	return out, nil
+}
+
+func compileValueFunc(vf ValueFrom) (valueFunc, error) {
+	// No function means no-op.
+	if vf.Func == "" {
+		return valueFunc{}, nil
+	}
+	valueFromFunc, ok := valueFromFuncs[vf.Func]
+	if !ok {
+		return valueFunc{}, fmt.Errorf("unknown valueFrom function: %s", vf.Func)
+	}
+	return valueFunc{
+		ValueFromFunc: valueFromFunc,
+		Args:          vf.Args,
+	}, nil
 }
 
 func famGen(f compiledFamily) generator.FamilyGenerator {
