@@ -21,6 +21,8 @@ import (
 	"strconv"
 )
 
+const LegacyFunctionName = "legacy"
+
 type ValueFromFunc struct {
 	FuncName    string
 	Func        func(v interface{}, args ...string) (interface{}, error)
@@ -28,9 +30,9 @@ type ValueFromFunc struct {
 }
 
 var valueFromFuncs = map[string]ValueFromFunc{
-	"path": {
-		FuncName:    "path",
-		Func:        vfPath,
+	LegacyFunctionName: {
+		FuncName:    LegacyFunctionName,
+		Func:        vfLegacy,
 		IsAggregate: false,
 	},
 	"count": {
@@ -45,7 +47,7 @@ var valueFromFuncs = map[string]ValueFromFunc{
 	},
 }
 
-func vfPath(v interface{}, args ...string) (interface{}, error) {
+func vfLegacy(v interface{}, args ...string) (interface{}, error) {
 	if len(args) == 0 {
 		return v, nil
 	}
@@ -63,13 +65,13 @@ func vfPath(v interface{}, args ...string) (interface{}, error) {
 		if i < 0 || i >= len(vv) {
 			return nil, fmt.Errorf("list index out of range: %s", args[0])
 		}
-		return vfPath(vv[i], args[1:]...)
+		return vfLegacy(vv[i], args[1:]...)
 	case map[string]interface{}:
 		found, ok := vv[args[0]]
 		if !ok {
 			return nil, nil
 		}
-		return vfPath(found, args[1:]...)
+		return vfLegacy(found, args[1:]...)
 	default:
 		return nil, nil
 	}

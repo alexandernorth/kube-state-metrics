@@ -38,7 +38,7 @@ type ValueFrom struct {
 func (vf *ValueFrom) unmarshallValueFrom(unmarshal func(interface{}) error) error {
 	var stringSlice []string
 	if err := unmarshal(&stringSlice); err == nil {
-		vf.Func = "path"
+		vf.Func = LegacyFunctionName
 		vf.Args = stringSlice
 		return nil
 	}
